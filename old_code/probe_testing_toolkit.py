@@ -146,7 +146,7 @@ model_checkpoint_path = (
     / "20250228_053913_gemma_2_9b_instruct_plr_4e-05_l12_logistic_ptwf_0.5_ps_400_ms_200_mlr_2e-06_bl_0.1_good"
 )
 test_data_path = (
-    WORK_DIR / "conditional_test_data_gemma_2_9b_instruct_20250226_010745.json"
+    WORK_DIR / "data/conditional_test_data_gemma_2_9b_instruct_20250226_010745.json"
 )
 USE_RESPONSE_TOKEN_IDS = True  # Cautious preservation of special tokens in response....
 layers_to_probe = [12]  # Could also just get this from metadata

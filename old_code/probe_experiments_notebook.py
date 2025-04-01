@@ -22,7 +22,7 @@ from models import (
     unembed_probs,
 )
 from probes import load_word_to_probe_dict, get_probe_score, get_dist_between_reps
-from utils import layer_sweep, patching_exp, get_first_word_tokens_pos
+from utils import layer_sweep, patching_exp, get_first_word_token_pos
 from data_utils import load_test_data, create_example_variations
 from visualization import (
     plot_layer_sweep_results,
@@ -72,7 +72,7 @@ MODEL_CHECKPOINT_PATH = (
     / "20250228_053913_gemma_2_9b_instruct_plr_4e-05_l12_logistic_ptwf_0.5_ps_400_ms_200_mlr_2e-06_bl_0.1_good"
 )
 TEST_DATA_PATH = (
-    WORK_DIR / "conditional_test_data_gemma_2_9b_instruct_20250226_010745.json"
+    WORK_DIR / "data/conditional_test_data_gemma_2_9b_instruct_20250226_010745.json"
 )
 USE_RESPONSE_TOKEN_IDS = True
 LAYERS_TO_PROBE = [12]
