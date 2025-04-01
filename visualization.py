@@ -5,6 +5,7 @@ import matplotlib.pyplot as plt
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 from pathlib import Path
+import seaborn as sns
 
 
 def plot_layer_sweep_results(layer_sweep_results, max_layer, save_dir="results"):
@@ -558,3 +559,39 @@ def plot_top_tokens(
             )
     fig.show()
     return fig
+
+
+def plot_violin(df, x, y, hue=None, ax=None, title=None, ylabel=None):
+    if ax is None:
+        ax = plt.gca()
+    if hue is None:
+        hue = x
+
+    # Create violin plot with hue parameter to avoid deprecation warning
+    sns.violinplot(
+        x=x,
+        y=y,
+        hue=hue,
+        data=df,
+        ax=ax,
+        palette="pastel",
+        inner="box",
+        alpha=0.6,
+        legend=False,
+    )
+
+    # Add individual points
+    sns.stripplot(
+        x=x, y=y, data=df, ax=ax, color="navy", alpha=0.5, jitter=True, size=5, zorder=1
+    )
+
+    # Add labels and title
+    if title is not None:
+        ax.set_title(title, fontsize=14)
+    if ylabel is not None:
+        ax.set_ylabel(ylabel)
+    ax.grid(axis="y", linestyle="--", alpha=0.7)
+
+    # Set tick labels properly
+    ax.set_xticks(range(len(df[x].unique())))
+    ax.set_xticklabels(df[x].unique(), rotation=45, ha="right")

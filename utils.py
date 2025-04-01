@@ -1,12 +1,15 @@
 """General utility functions for self-obfuscation experiments."""
 
 import torch as th
-import nnsight as nns
 from nnterp.nnsight_utils import get_layer_output, get_num_layers, get_layer
-from pathlib import Path
+from tqdm.auto import tqdm
+from models import stitch_model, unstitch_model
 
 
 def keep_first_sequence(bool_tensor):
+    assert (
+        bool_tensor.dtype == th.bool
+    ), f"Input tensor must be boolean, got {bool_tensor.dtype}"
     # Get indices where value changes (1 -> 0 or 0 -> 1)
     changes = bool_tensor[:, 1:] != bool_tensor[:, :-1]
 
@@ -43,8 +46,9 @@ def patch_pos(samples, pos_list, source_model, target_model, max_layer):
     Returns:
         Tensor of activations from the patched model.
     """
+    pos_tensor = th.tensor(pos_list, device=samples.input_ids.device)
+    arange = th.arange(samples.input_ids.shape[0], device=samples.input_ids.device)
     layer_acts = []
-    print("collecting source model activations")
     with source_model.trace(
         dict(
             input_ids=samples.input_ids.to(source_model.device),
@@ -52,35 +56,26 @@ def patch_pos(samples, pos_list, source_model, target_model, max_layer):
         )
     ):
         for layer in range(max_layer + 1):
-            acts = []
-            for i, pos in enumerate(pos_list):
-                assert (
-                    0 <= pos < samples.input_ids.shape[1]
-                ), f"pos: {pos} is out of bounds for input_ids: {samples.input_ids.shape[1]}"
-                acts.append(get_layer_output(source_model, layer)[i, pos].save())
-            layer_acts.append(acts)
+            layer_acts.append(
+                get_layer_output(source_model, layer)[arange, pos_tensor].save()
+            )
 
-    probe_acts = []
-    print("patching target model")
     with target_model.trace(
         dict(input_ids=samples.input_ids, attention_mask=samples.attention_mask)
     ):
         for layer in range(max_layer + 1):
-            for i, pos in enumerate(pos_list):
-                assert (
-                    0 <= pos < samples.input_ids.shape[1]
-                ), f"pos: {pos} is out of bounds for input_ids: {samples.input_ids.shape[1]}"
-                get_layer_output(target_model, layer)[i, pos] = layer_acts[layer][i]
+            get_layer_output(target_model, layer)[arange, pos_tensor] = layer_acts[
+                layer
+            ]
 
+        probe_acts = get_layer_output(target_model, max_layer).save()
         get_layer(target_model, max_layer).output.stop()
-        probe_acts = get_layer_output(target_model, max_layer).cpu().save()
 
-    print("patching finished")
     return probe_acts
 
 
 def patching_exp(
-    adv_samples,
+    samples_dict,
     probe,
     source_model,
     target_model,
@@ -92,7 +87,7 @@ def patching_exp(
     Run a patching experiment.
 
     Args:
-        adv_samples: Adversarial samples to use.
+        samples_dict: Dictionary of samples to use.
         probe: Probe to evaluate with.
         source_model: Model to get activations from.
         target_model: Model to patch.
@@ -106,70 +101,58 @@ def patching_exp(
     # Load chat template if provided
     with open(message_template_path, "r") as f:
         message_template = f.read()
-
-    # Create conversations from samples
-    convs = [
-        [
-            {"role": "user", "content": sample["prompt"]},
-            {"role": "assistant", "content": sample["response"]},
+    result = {}
+    for name, samples in tqdm(samples_dict.items(), desc="Patching experiments"):
+        # Create conversations from samples
+        convs = [
+            [
+                {"role": "user", "content": sample["prompt"]},
+                {"role": "assistant", "content": sample["response"]},
+            ]
+            for _, sample in samples.iterrows()
         ]
-        for _, sample in adv_samples.iterrows()
-    ]
 
-    # Apply chat template
-    convs = tokenizer.apply_chat_template(
-        convs,
-        padding=True,
-        return_tensors="pt",
-        return_dict=True,
-        chat_template=message_template,
-        return_assistant_tokens_mask=True,
-    )
-    messages_mask = convs.assistant_masks
+        # Apply chat template
+        convs = tokenizer.apply_chat_template(
+            convs,
+            padding=True,
+            return_tensors="pt",
+            return_dict=True,
+            chat_template=message_template,
+            return_assistant_tokens_mask=True,
+        )
+        messages_mask = convs.assistant_masks.bool()
 
-    # Find token positions for the target word in each sample
-    tok_pos = [
-        get_first_word_tokens_pos(tokenizer, conv, sample["word"])
-        for conv, (_, sample) in zip(convs.input_ids, adv_samples.iterrows())
-    ]
-    print(f"Token positions: {tok_pos}")
+        # Find token positions for the target word in each sample
+        tok_pos = [
+            get_first_word_token_pos(tokenizer, conv, sample["word"])
+            for conv, (_, sample) in zip(convs.input_ids, samples.iterrows())
+        ]
+        assert (
+            len(tok_pos) == len(samples) == len(convs.input_ids)
+        ), "Mismatched dimensions"
 
-    # Validate dimensions and check for invalid positions
-    assert (
-        len(tok_pos) == len(adv_samples) == len(convs.input_ids)
-    ), "Mismatched dimensions"
+        # Patch token positions
+        probe_acts = patch_pos(convs, tok_pos, source_model, target_model, max_layer)
 
-    # Patch token positions
-    probe_acts = patch_pos(convs, tok_pos, source_model, target_model, max_layer)
+        # Extract input and target masks
+        input_mask, target_mask = get_input_and_target_masks(messages_mask)
+        assert input_mask.shape == target_mask.shape, "Mismatched mask shapes"
+        start_target_reps = th.arange(target_mask.shape[1])[target_mask[0]].min()
+        target_reps = probe_acts[:, start_target_reps:, :].unsqueeze(1)  # add layer dim
+        target_mask = target_mask[:, start_target_reps:].to(target_reps.device)
+        probe_score = probe.predict_example(
+            input_reps=None,
+            target_reps=target_reps,
+            target_mask=target_mask,
+        )
 
-    # Extract input and target masks
-    input_mask, target_mask = get_input_and_target_masks(messages_mask)
-    assert input_mask.shape == target_mask.shape, "Mismatched mask shapes"
+        result[name] = probe_score.cpu().numpy()
 
-    # Calculate input length
-    input_len = input_mask.sum(dim=-1)
-    print(f"input_mask: {input_mask}\nAssist mask: {messages_mask.tolist()}")
-    assert (
-        input_len == input_len[0]
-    ).all(), f"Variable input lengths not supported, found: {input_len}"
-    input_len = th.arange(input_mask.shape[1])[input_mask[0]].max()
-
-    # Extract representations and calculate probe score
-    input_reps = probe_acts[:, :input_len, :]
-    start_target_reps = th.arange(target_mask.shape[1])[target_mask[0]].min()
-    target_reps = probe_acts[:, start_target_reps:, :]
-
-    probe_score = probe.predict_example(
-        input_reps=input_reps,
-        target_reps=target_reps,
-        target_mask=target_mask[:, start_target_reps:],
-    )
-
-    print(f"Probe score: {probe_score}")
-    return probe_score
+    return result
 
 
-def get_first_word_tokens_pos(tokenizer, prompt_or_tokens, word):
+def get_first_word_token_pos(tokenizer, prompt_or_tokens, word):
     """
     Find the last token position of a specific word in tokenized text.
 
@@ -235,5 +218,22 @@ def layer_sweep(target_model, source_model, probe, examples, num_layers, max_lay
             get_probe_score(probe, examples, model=target_model).mean().item()
         )
         unstitch_model(target_model, layers_to_stitch)
+
+    return results
+
+
+def run_stitching_experiment(
+    target_model, source_model, get_results_fn, stop_at_layer=None
+):
+
+    if stop_at_layer is None:
+        stop_at_layer = get_num_layers(target_model.model) - 1
+
+    results = []
+    unstitch_model(target_model)
+    for i in tqdm(range((stop_at_layer + 1)), desc="Running stitching experiment"):
+        stitch_model(target_model, source_model, list(range(i)))
+        results.append(get_results_fn(target_model))
+        unstitch_model(target_model, list(range(i)))
 
     return results

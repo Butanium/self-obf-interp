@@ -22,6 +22,13 @@ def load_test_data(data_path: str) -> pd.DataFrame:
     return pd.DataFrame(test_data)
 
 
+def sample_to_conv(sample) -> list[dict]:
+    return [
+        {"role": "user", "content": sample["prompt"]},
+        {"role": "assistant", "content": sample["response"]},
+    ]
+
+
 def create_example_variations(
     test_data_df: pd.DataFrame, words: List[str]
 ) -> Dict[str, pd.DataFrame]:
@@ -50,9 +57,9 @@ def create_example_variations(
         for adv_word in words:
             if word == adv_word:
                 # For cases where the word is the same as the adversarial word
-                entries[f"{word.capitalize()} adv {adv_word}"] = base_examples.query(
-                    f"adversarial_word == '{adv_word}'"
-                )
+                df = base_examples.query(f"adversarial_word == '{adv_word}'")
+                df["messages"] = [sample_to_conv(sample) for _, sample in df.iterrows()]
+                entries[f"{word.capitalize()} adv {adv_word}"] = df
             else:
                 # For cases where we need to create cross-adversarial examples
                 source_examples = base_examples.query(f"adversarial_word == '{word}'")
@@ -64,8 +71,10 @@ def create_example_variations(
                         f"You are being probed for '{adv_word}'",
                     )
                 )
+                modified_examples["messages"] = [
+                    sample_to_conv(sample) for _, sample in modified_examples.iterrows()
+                ]
                 entries[f"{word.capitalize()} adv {adv_word}"] = modified_examples
-
     return entries
 
 
