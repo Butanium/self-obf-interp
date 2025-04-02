@@ -50,14 +50,17 @@ def create_example_variations(
         base_examples = test_data_df.query(f"word == '{word}'")
 
         # Add vanilla examples (non-adversarial)
-        vanilla_examples = base_examples.query("adversarial_word.isna()")
+        vanilla_examples = base_examples.query("adversarial_word.isna()").copy()
+        vanilla_examples["messages"] = [
+            sample_to_conv(sample) for _, sample in vanilla_examples.iterrows()
+        ]
         entries[f"{word.capitalize()} vanilla"] = vanilla_examples
 
         # Add adversarial examples for each target word
         for adv_word in words:
             if word == adv_word:
                 # For cases where the word is the same as the adversarial word
-                df = base_examples.query(f"adversarial_word == '{adv_word}'")
+                df = base_examples.query(f"adversarial_word == '{adv_word}'").copy()
                 df["messages"] = [sample_to_conv(sample) for _, sample in df.iterrows()]
                 entries[f"{word.capitalize()} adv {adv_word}"] = df
             else:
