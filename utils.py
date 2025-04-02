@@ -3,8 +3,7 @@
 import torch as th
 from nnterp.nnsight_utils import get_layer_output, get_num_layers, get_layer
 from tqdm.auto import tqdm
-from models import stitch_model, unstitch_model
-
+from models import stitch_model, unstitch_model, get_model_reps
 
 def keep_first_sequence(bool_tensor):
     assert (
@@ -237,3 +236,114 @@ def run_stitching_experiment(
         unstitch_model(target_model, list(range(i)))
 
     return results
+
+
+
+@th.no_grad()
+def get_dist_between_reps(entries, base_model, obf_model):
+    """Calculate distance metrics between base and obfuscated model representations.
+
+    Args:
+        entries: Examples to evaluate on.
+        base_model: The base model.
+        obf_model: The obfuscated model.
+
+    Returns:
+        Tuple of various distance metrics.
+    """
+    layers = list(range(len(base_model.model.model.layers)))
+    base_reps = get_model_reps(base_model, entries, layers=layers)
+    obf_reps = get_model_reps(obf_model, entries, layers=layers)
+
+    # Input representation norms
+    input_base_reps_norms = (
+        th.norm(base_reps.input_reps, dim=-1)
+        .transpose(0, 1)
+        .reshape(len(layers), -1)
+        .mean(dim=-1)
+    )
+    input_obf_reps_norms = (
+        th.norm(obf_reps.input_reps, dim=-1)
+        .transpose(0, 1)
+        .reshape(len(layers), -1)
+        .mean(dim=-1)
+    )
+    input_reps_norms = (
+        th.norm(base_reps.input_reps - obf_reps.input_reps, dim=-1)
+        .transpose(0, 1)
+        .reshape(len(layers), -1)
+        .mean(dim=-1)
+    )
+    input_reps_norms_normalized = 2 * (
+        th.norm(base_reps.input_reps - obf_reps.input_reps, dim=-1)
+        / (th.norm(base_reps.input_reps, dim=-1) + th.norm(obf_reps.input_reps, dim=-1))
+    ).transpose(0, 1).reshape(len(layers), -1).mean(dim=-1)
+
+    # Target representation norms
+    target_base_reps_norms = (
+        th.norm(base_reps.target_reps, dim=-1)
+        .transpose(1, 2)[base_reps.loss_mask]
+        .mean(dim=0)
+    )
+    target_obf_reps_norms = (
+        th.norm(obf_reps.target_reps, dim=-1)
+        .transpose(1, 2)[base_reps.loss_mask]
+        .mean(dim=0)
+    )
+    target_reps_norms = (
+        th.norm(base_reps.target_reps - obf_reps.target_reps, dim=-1)
+        .transpose(1, 2)[base_reps.loss_mask]
+        .mean(dim=0)
+    )
+    target_reps_norms_normalized = (
+        (
+            2
+            * th.norm(base_reps.target_reps - obf_reps.target_reps, dim=-1)
+            / (
+                th.norm(base_reps.target_reps, dim=-1)
+                + th.norm(obf_reps.target_reps, dim=-1)
+            )
+        )
+        .transpose(1, 2)[base_reps.loss_mask]
+        .mean(dim=0)
+    )
+
+    # KL divergence metrics
+    kl_div_input = th.nn.functional.kl_div(
+        th.log_softmax(obf_reps.input_logits, dim=-1),
+        th.log_softmax(base_reps.input_logits, dim=-1),
+        log_target=True,
+        reduction="batchmean",
+    )
+    kl_div_target = (
+        th.nn.functional.kl_div(
+            th.log_softmax(obf_reps.target_logits[obf_reps.loss_mask], dim=-1),
+            th.log_softmax(base_reps.target_logits[base_reps.loss_mask], dim=-1),
+            log_target=True,
+            reduction="sum",
+        )
+        / base_reps.loss_mask.sum()
+    )
+
+    # Statistical distance metrics
+    base_probs_input = th.softmax(base_reps.input_logits, dim=-1)
+    obf_probs_input = th.softmax(obf_reps.input_logits, dim=-1)
+    base_probs_target = th.softmax(base_reps.target_logits, dim=-1)
+    obf_probs_target = th.softmax(obf_reps.target_logits, dim=-1)
+    stat_dist_input = (base_probs_input - obf_probs_input).abs().sum(dim=-1).mean()
+    stat_dist_target = (base_probs_target - obf_probs_target).abs().sum(dim=-1).mean()
+
+    return (
+        input_reps_norms.cpu().numpy(),
+        target_reps_norms.cpu().numpy(),
+        input_reps_norms_normalized.cpu().numpy(),
+        target_reps_norms_normalized.cpu().numpy(),
+        input_base_reps_norms.cpu().numpy(),
+        input_obf_reps_norms.cpu().numpy(),
+        target_base_reps_norms.cpu().numpy(),
+        target_obf_reps_norms.cpu().numpy(),
+        kl_div_input.item(),
+        kl_div_target.item(),
+        stat_dist_input.item(),
+        stat_dist_target.item(),
+    )
