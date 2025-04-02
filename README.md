@@ -2,6 +2,21 @@ All files in the root folder are mine. Notebook_results contains my plots. Data 
 
 To run the code you'll need access to private models from Max, so reach out if you want to run it :)
 
+## Setup
+```bash
+git config --global credential.helper store
+pip install huggingface_hub uv
+huggingface-cli login --token <YOUR_ACCESS_TOKEN_WITH_GEMMA_AND_MAX_REPO> --add-to-git-credential
+apt update && apt install git-lfs -y
+git lfs install
+git-lfs clone https://huggingface.co/self-obfuscation-model-viewers/self-obf-files
+uv sync
+cd self-obf-files
+git switch models-only
+cd ..
+uv run python -c "from transformers import AutoModelForCausalLM; AutoModelForCausalLM.from_pretrained('google/gemma-2-9b-it')"  # optional but will download gemma-2-9b-it if it's not in your cache already
+```
+
 ## File Descriptions
 
 - `probe_experiments_notebook.ipynb`: Python notebook for running experiments to analyze self-obfuscation in language models using probing techniques. Includes layer stitching experiments, representation analysis, and visualization.
